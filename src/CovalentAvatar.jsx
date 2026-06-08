@@ -15,6 +15,16 @@ const QUICK_QUESTIONS = [
   "What are the next steps to partner?",
 ];
 
+// Merge a streaming transcription chunk into the current interim text,
+// handling both cumulative and delta chunk emission styles.
+function mergeInterim(prev, next) {
+  if (!next) return prev;
+  if (!prev) return next;
+  if (next.startsWith(prev)) return next;     // cumulative: chunk supersedes
+  if (prev.endsWith(next)) return prev;        // duplicate/late chunk
+  return `${prev} ${next}`.replace(/\s+/g, " ").trim(); // delta: append
+}
+
 // Signature corner-bracket motif from the Covalent deck.
 function CornerBracket({ flip = false }) {
   return (
@@ -38,14 +48,53 @@ export default function CovalentAvatar() {
   const [selectedVoiceId, setSelectedVoiceId] = useState("");
   const [micState, setMicState] = useState("off"); // off | starting | listening | muted
   const [micError, setMicError] = useState("");
-  const [userTranscript, setUserTranscript] = useState("");
   const [avatarSpeaking, setAvatarSpeaking] = useState(false);
+  const [messages, setMessages] = useState([]);   // [{ id, role: 'user'|'avatar', text }]
+  const [liveUser, setLiveUser] = useState("");    // in-progress user caption
+  const [liveAvatar, setLiveAvatar] = useState(""); // in-progress avatar caption
   const sessionRef = useRef(null);
   const videoRef = useRef(null);
+  const liveUserRef = useRef("");
+  const liveAvatarRef = useRef("");
+  const msgId = useRef(0);
+  const captionsRef = useRef(null);
+
+  // Commit a finalized utterance to the transcript (dedupes identical repeats).
+  const commit = (role, text) => {
+    const t = (text || "").trim();
+    if (!t) return;
+    setMessages(prev => {
+      const last = prev[prev.length - 1];
+      if (last && last.role === role && last.text === t) return prev;
+      return [...prev, { id: ++msgId.current, role, text: t }];
+    });
+  };
+
+  // Update the streaming interim caption for a role, tolerant of both
+  // cumulative chunks ("hel" → "hello") and delta chunks ("hel" + "lo").
+  const setInterim = (role, nextChunk) => {
+    const ref = role === "user" ? liveUserRef : liveAvatarRef;
+    const setter = role === "user" ? setLiveUser : setLiveAvatar;
+    const merged = mergeInterim(ref.current, nextChunk || "");
+    ref.current = merged;
+    setter(merged);
+  };
+
+  const clearInterim = (role) => {
+    if (role === "user") { liveUserRef.current = ""; setLiveUser(""); }
+    else { liveAvatarRef.current = ""; setLiveAvatar(""); }
+  };
+
+  const resetTranscript = () => {
+    setMessages([]);
+    clearInterim("user");
+    clearInterim("avatar");
+  };
 
   const startSession = async () => {
     if (sessionRef.current) return;
     setError("");
+    resetTranscript();
     setLoading(true);
     try {
       const tokenRes = await fetch("/api/heygen/token", {
@@ -80,8 +129,16 @@ export default function CovalentAvatar() {
         setMicState("off");
       });
 
+      // ---- Real-time captions ----
+      session.on(AgentEventsEnum.USER_TRANSCRIPTION_CHUNK, (e) => setInterim("user", e.text));
       session.on(AgentEventsEnum.USER_TRANSCRIPTION, (e) => {
-        setUserTranscript(e.text || "");
+        commit("user", e.text);
+        clearInterim("user");
+      });
+      session.on(AgentEventsEnum.AVATAR_TRANSCRIPTION_CHUNK, (e) => setInterim("avatar", e.text));
+      session.on(AgentEventsEnum.AVATAR_TRANSCRIPTION, (e) => {
+        commit("avatar", e.text);
+        clearInterim("avatar");
       });
       session.on(AgentEventsEnum.AVATAR_SPEAK_STARTED, () => setAvatarSpeaking(true));
       session.on(AgentEventsEnum.AVATAR_SPEAK_ENDED, () => setAvatarSpeaking(false));
@@ -141,6 +198,12 @@ export default function CovalentAvatar() {
       }
     };
   }, []);
+
+  // Keep the transcript rail pinned to the latest line.
+  useEffect(() => {
+    const el = captionsRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages, liveUser, liveAvatar]);
 
   useEffect(() => {
     let cancelled = false;
@@ -261,48 +324,72 @@ export default function CovalentAvatar() {
           </section>
         ) : (
           <section className="cv-session">
-            <div className="cv-video-wrap">
-              <video ref={videoRef} autoPlay playsInline className="cv-video" />
-              <div className={`cv-status ${connected ? "cv-status--live" : ""}`}>
-                <span className="cv-status__dot" />
-                {connected ? "Live" : "Connecting…"}
+            <div className="cv-session__main">
+              <div className="cv-video-wrap">
+                <video ref={videoRef} autoPlay playsInline className="cv-video" />
+                <div className={`cv-status ${connected ? "cv-status--live" : ""}`}>
+                  <span className="cv-status__dot" />
+                  {connected ? "Live" : "Connecting…"}
+                </div>
               </div>
+
+              <div className="cv-controls">
+                <button
+                  className={`cv-mic cv-mic--${micState} ${avatarSpeaking ? "cv-mic--speaking" : ""}`}
+                  onClick={toggleMic}
+                  disabled={!connected || micState === "starting"}
+                  title={micLabel}
+                  aria-label={micLabel}
+                >
+                  <MicIcon muted={micState === "muted"} />
+                </button>
+                <div className="cv-mic__label">{micLabel}</div>
+                {micError && <div className="cv-error cv-error--sm">{micError}</div>}
+              </div>
+
+              <div className="cv-prompts">
+                <div className="cv-label cv-label--center">Ask the advisor</div>
+                <div className="cv-chips">
+                  {QUICK_QUESTIONS.map(q => (
+                    <button
+                      key={q}
+                      className="cv-chip"
+                      onClick={() => ask(q)}
+                      disabled={!connected}
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <button className="cv-end" onClick={stopSession}>End briefing</button>
             </div>
 
-            <div className="cv-controls">
-              <button
-                className={`cv-mic cv-mic--${micState} ${avatarSpeaking ? "cv-mic--speaking" : ""}`}
-                onClick={toggleMic}
-                disabled={!connected || micState === "starting"}
-                title={micLabel}
-                aria-label={micLabel}
-              >
-                <MicIcon muted={micState === "muted"} />
-              </button>
-              <div className="cv-mic__label">{micLabel}</div>
-              {micError && <div className="cv-error cv-error--sm">{micError}</div>}
-              {userTranscript && (
-                <div className="cv-transcript">“{userTranscript}”</div>
-              )}
-            </div>
+            <aside className="cv-captions" aria-label="Live transcript">
+              <div className="cv-captions__head">
+                <span className="cv-captions__title">Live Transcript</span>
+                <span className={`cv-captions__live ${connected ? "on" : ""}`}>
+                  <span className="cv-captions__dot" /> Real-time
+                </span>
+              </div>
 
-            <div className="cv-prompts">
-              <div className="cv-label cv-label--center">Ask the advisor</div>
-              <div className="cv-chips">
-                {QUICK_QUESTIONS.map(q => (
-                  <button
-                    key={q}
-                    className="cv-chip"
-                    onClick={() => ask(q)}
-                    disabled={!connected}
-                  >
-                    {q}
-                  </button>
+              <div className="cv-captions__body" ref={captionsRef}>
+                {messages.length === 0 && !liveUser && !liveAvatar && (
+                  <div className="cv-captions__empty">
+                    Captions appear here in real time as the conversation unfolds.
+                    Speak or pick a question to begin.
+                  </div>
+                )}
+
+                {messages.map(m => (
+                  <CaptionLine key={m.id} role={m.role} text={m.text} />
                 ))}
-              </div>
-            </div>
 
-            <button className="cv-end" onClick={stopSession}>End briefing</button>
+                {liveUser && <CaptionLine role="user" text={liveUser} live />}
+                {liveAvatar && <CaptionLine role="avatar" text={liveAvatar} live />}
+              </div>
+            </aside>
           </section>
         )}
 
@@ -312,6 +399,19 @@ export default function CovalentAvatar() {
       <footer className="cv-footer">
         Covalent Medical · An integrated supplier partner for the US aesthetic &amp; wellness market
       </footer>
+    </div>
+  );
+}
+
+function CaptionLine({ role, text, live = false }) {
+  const isUser = role === "user";
+  return (
+    <div className={`cv-cap cv-cap--${isUser ? "user" : "avatar"} ${live ? "cv-cap--live" : ""}`}>
+      <span className="cv-cap__who">{isUser ? "You" : "Advisor"}</span>
+      <p className="cv-cap__text">
+        {text}
+        {live && <span className="cv-cap__caret" aria-hidden="true" />}
+      </p>
     </div>
   );
 }
@@ -490,8 +590,11 @@ const STYLES = `
 
   /* ---------- Session ---------- */
   .cv-session {
-    display: flex; flex-direction: column; align-items: center; gap: 24px;
-    width: 100%; max-width: 760px;
+    display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 28px;
+    align-items: stretch; width: 100%; max-width: 1160px;
+  }
+  .cv-session__main {
+    min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 22px;
   }
   .cv-video-wrap { position: relative; width: 100%; }
   .cv-video {
@@ -534,10 +637,74 @@ const STYLES = `
   .cv-mic__label {
     font-size: 12px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--muted);
   }
-  .cv-transcript {
-    font-size: 14px; color: var(--bronze-bright); font-style: italic;
-    text-align: center; max-width: 600px;
+  /* ---------- Captions rail ---------- */
+  .cv-captions {
+    min-width: 0; display: flex; flex-direction: column;
+    background: rgba(8,19,32,0.55);
+    border: 1px solid var(--line); border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 30px 80px rgba(0,0,0,0.4);
+    max-height: 620px;
   }
+  .cv-captions__head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 18px; border-bottom: 1px solid var(--line);
+    background: rgba(181,137,90,0.06);
+  }
+  .cv-captions__title {
+    font-size: 11px; letter-spacing: 2px; text-transform: uppercase;
+    color: var(--bronze-bright); font-weight: 700;
+  }
+  .cv-captions__live {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: var(--muted);
+  }
+  .cv-captions__dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+  .cv-captions__live.on { color: #7FE0A8; }
+  .cv-captions__live.on .cv-captions__dot {
+    background: #4FD18A; box-shadow: 0 0 8px #4FD18A; animation: cv-pulse 1.8s infinite;
+  }
+  .cv-captions__body {
+    flex: 1; overflow-y: auto; padding: 18px;
+    display: flex; flex-direction: column; gap: 16px;
+    scrollbar-width: thin; scrollbar-color: var(--bronze) transparent;
+  }
+  .cv-captions__body::-webkit-scrollbar { width: 6px; }
+  .cv-captions__body::-webkit-scrollbar-thumb { background: rgba(181,137,90,0.4); border-radius: 3px; }
+  .cv-captions__empty {
+    color: var(--muted); font-size: 13px; line-height: 1.6; margin: auto 0;
+    text-align: center; padding: 0 6px;
+  }
+
+  .cv-cap { display: flex; flex-direction: column; gap: 5px; }
+  .cv-cap--user { align-items: flex-start; }
+  .cv-cap--avatar { align-items: flex-start; }
+  .cv-cap__who {
+    font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; font-weight: 700;
+  }
+  .cv-cap--user .cv-cap__who { color: var(--muted); }
+  .cv-cap--avatar .cv-cap__who { color: var(--bronze-bright); }
+  .cv-cap__text {
+    font-size: 14px; line-height: 1.55; color: var(--text);
+    padding: 10px 13px; border-radius: 12px; max-width: 100%;
+    border: 1px solid var(--line);
+  }
+  .cv-cap--user .cv-cap__text {
+    background: rgba(255,255,255,0.05);
+    border-top-left-radius: 4px;
+  }
+  .cv-cap--avatar .cv-cap__text {
+    background: rgba(181,137,90,0.12);
+    border-color: rgba(181,137,90,0.3);
+    border-top-left-radius: 4px;
+  }
+  .cv-cap--live .cv-cap__text { opacity: 0.92; }
+  .cv-cap__caret {
+    display: inline-block; width: 7px; height: 1.05em; margin-left: 3px;
+    vertical-align: text-bottom; background: var(--bronze-bright);
+    animation: cv-blink 1s steps(2, start) infinite;
+  }
+  @keyframes cv-blink { 0%,100% { opacity: 1; } 50% { opacity: 0; } }
 
   .cv-prompts { width: 100%; }
   .cv-chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 9px; }
@@ -566,6 +733,10 @@ const STYLES = `
   }
 
   /* ---------- Responsive ---------- */
+  @media (max-width: 980px) {
+    .cv-session { grid-template-columns: 1fr; gap: 22px; }
+    .cv-captions { max-height: 300px; }
+  }
   @media (max-width: 860px) {
     .cv-lobby { grid-template-columns: 1fr; gap: 36px; }
     .cv-header { padding: 16px 20px; }
