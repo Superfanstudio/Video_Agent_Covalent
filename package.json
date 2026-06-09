@@ -11,6 +11,9 @@
   },
   "dependencies": {
     "@heygen/liveavatar-web-sdk": "^0.0.18",
+    "@supabase/supabase-js": "^2.108.0",
+    "mammoth": "^1.12.0",
+    "pdf-parse": "^2.4.5",
     "react": "^19.2.6",
     "react-dom": "^19.2.6"
   },

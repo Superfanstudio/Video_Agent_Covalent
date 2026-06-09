@@ -2,6 +2,8 @@
 // Mints a LiveAvatar session token using HEYGEN_API_KEY from server env vars,
 // and lazily bootstraps the "Covalent Partner Advisor" context for OEM/vendor partners.
 
+import { makeStore } from '../_lib/store.js'
+
 const CONTEXT_NAME = 'Covalent Partner Advisor'
 
 const CONTEXT_OPENING = "Welcome. I'm the Covalent partnership advisor. I work with OEMs, manufacturers, and suppliers evaluating a North American channel partnership with Covalent Medical. What would you like to explore?"
@@ -73,17 +75,33 @@ async function findContextByName(apiKey, name) {
 }
 
 async function ensureContextId(apiKey) {
-  if (cachedContextId) return cachedContextId
+  // Merge admin-ingested knowledge-base entries (if any) into the context.
+  let prompt = CONTEXT_PROMPT
+  try {
+    const store = makeStore(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY)
+    if (store) {
+      const kb = await store.enabledKnowledgeText()
+      if (kb) prompt += `\n\nADDITIONAL KNOWLEDGE (admin-provided — treat as authoritative):\n${kb}`
+      const docs = await store.enabledDocumentText(6000)
+      if (docs) prompt += `\n\nKNOWLEDGE FROM UPLOADED DOCUMENTS (admin-provided — treat as authoritative):\n${docs}`
+    }
+  } catch { /* knowledge optional */ }
 
   const body = {
     name: CONTEXT_NAME,
-    prompt: CONTEXT_PROMPT,
+    prompt,
     opening_text: CONTEXT_OPENING,
   }
 
-  const existing = await findContextByName(apiKey, CONTEXT_NAME)
-  if (existing) {
-    const r = await fetch(`https://api.liveavatar.com/v1/contexts/${existing.id}`, {
+  // Find the context id (cached or by name), PATCH it with the freshest prompt so
+  // admin knowledge changes take effect; create it if it doesn't exist yet.
+  let id = cachedContextId
+  if (!id) {
+    const existing = await findContextByName(apiKey, CONTEXT_NAME)
+    id = existing?.id || null
+  }
+  if (id) {
+    const r = await fetch(`https://api.liveavatar.com/v1/contexts/${id}`, {
       method: 'PATCH',
       headers: { 'X-API-KEY': apiKey, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -92,7 +110,7 @@ async function ensureContextId(apiKey) {
       const j = await r.json().catch(() => ({}))
       throw new Error(`Failed to update context: ${j?.message || r.status}`)
     }
-    cachedContextId = existing.id
+    cachedContextId = id
     return cachedContextId
   }
 

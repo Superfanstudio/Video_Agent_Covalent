@@ -1,5 +1,7 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
+import { handleApi } from './api/_lib/router.js'
+import { makeStore } from './api/_lib/store.js'
 
 function heyGenTokenPlugin(env) {
   let cachedContextId = env.HEYGEN_CONTEXT_ID || null
@@ -18,9 +20,7 @@ function heyGenTokenPlugin(env) {
   }
 
   async function ensureContextId(apiKey) {
-    if (cachedContextId) return cachedContextId
-
-    const prompt = [
+    const promptLines = [
       'You are the Covalent Partnership Advisor, an AI representative for Covalent Medical speaking with OEMs, manufacturers, and suppliers who are evaluating a partnership. Covalent Medical is "The Practice Success Platform" — an AI-first, AI-native integrated supplier partner for the US aesthetic & wellness market, delivering product, business services, and practice success to provider partners.',
       '',
       'AUDIENCE: You are speaking to a potential OEM / manufacturer / supplier partner — a capital equipment maker, an injectable or dermal-filler manufacturer, a physician-dispensed skincare brand, or a regenerative / biostimulator supplier. Frame every answer around what the partnership means for THEM: channel reach, volume, economics, brand, and risk.',
@@ -72,7 +72,19 @@ function heyGenTokenPlugin(env) {
       'A: It starts with a letter of intent, typically within 30 days. For capital that moves to product specification and a soft launch in pilot accounts within six months; for consumables, a GPO master agreement within 60 days and first product to practices within 120 days. We can scope the right path for your category on this call.',
       '',
       'For any question NOT in this list, stay in character as the Covalent Partnership Advisor and answer in the same concise, enterprise style — always framing the answer around the partner’s economics, reach, brand, and risk.',
-    ].join('\n')
+    ]
+
+    // Merge admin-ingested knowledge-base entries (if any) into the context.
+    let prompt = promptLines.join('\n')
+    try {
+      const store = makeStore(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY)
+      if (store) {
+        const kb = await store.enabledKnowledgeText()
+        if (kb) prompt += `\n\nADDITIONAL KNOWLEDGE (admin-provided — treat as authoritative):\n${kb}`
+        const docs = await store.enabledDocumentText(6000)
+        if (docs) prompt += `\n\nKNOWLEDGE FROM UPLOADED DOCUMENTS (admin-provided — treat as authoritative):\n${docs}`
+      }
+    } catch { /* knowledge optional */ }
 
     const body = {
       name: CONTEXT_NAME,
@@ -80,9 +92,15 @@ function heyGenTokenPlugin(env) {
       opening_text: CONTEXT_OPENING,
     }
 
-    const existing = await findContextByName(apiKey, CONTEXT_NAME)
-    if (existing) {
-      const r = await fetch(`https://api.liveavatar.com/v1/contexts/${existing.id}`, {
+    // Find the context id (cached or by name), then PATCH it with the freshest
+    // prompt so admin knowledge changes take effect; create it if it doesn't exist.
+    let id = cachedContextId
+    if (!id) {
+      const existing = await findContextByName(apiKey, CONTEXT_NAME)
+      id = existing?.id || null
+    }
+    if (id) {
+      const r = await fetch(`https://api.liveavatar.com/v1/contexts/${id}`, {
         method: 'PATCH',
         headers: { 'X-API-KEY': apiKey, 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -91,7 +109,7 @@ function heyGenTokenPlugin(env) {
         const j = await r.json().catch(() => ({}))
         throw new Error(`Failed to update context: ${j?.message || r.status}`)
       }
-      cachedContextId = existing.id
+      cachedContextId = id
       return cachedContextId
     }
 
@@ -104,6 +122,32 @@ function heyGenTokenPlugin(env) {
     if (!r.ok || !j?.data?.id) throw new Error(`Failed to create context: ${j?.message || r.status}`)
     cachedContextId = j.data.id
     return cachedContextId
+  }
+
+  // /api/db/* — conversation capture + admin (Supabase). Shared router.
+  const dbHandler = async (req, res) => {
+    try {
+      const url = new URL(req.url, 'http://localhost')
+      const path = url.pathname.replace(/^\/+|\/+$/g, '')
+      const query = Object.fromEntries(url.searchParams.entries())
+      const ip = (req.headers['x-forwarded-for'] || '').split(',')[0].trim()
+        || req.socket?.remoteAddress || null
+      let body = {}
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        let raw = ''
+        for await (const chunk of req) raw += chunk
+        try { body = raw ? JSON.parse(raw) : {} } catch { body = {} }
+      }
+      const { status, body: out } = await handleApi(
+        { method: req.method, path, query, body, ip }, env,
+      )
+      res.statusCode = status
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify(out))
+    } catch (err) {
+      res.statusCode = 500
+      res.end(JSON.stringify({ error: 'server_error', detail: String(err?.message || err) }))
+    }
   }
 
   const handler = async (req, res) => {
@@ -213,10 +257,12 @@ function heyGenTokenPlugin(env) {
     configureServer(server) {
       server.middlewares.use('/api/heygen/token', handler)
       server.middlewares.use('/api/heygen/options', optionsHandler)
+      server.middlewares.use('/api/db', dbHandler)
     },
     configurePreviewServer(server) {
       server.middlewares.use('/api/heygen/token', handler)
       server.middlewares.use('/api/heygen/options', optionsHandler)
+      server.middlewares.use('/api/db', dbHandler)
     },
   }
 }

@@ -1,11 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" fill="none">
-  <rect width="48" height="48" rx="10" fill="#0C1B2E"/>
-  <rect x="11" y="11" width="26" height="26" rx="4" fill="none" stroke="#B5895A" stroke-width="2.5"/>
-  <rect x="18" y="18" width="12" height="12" rx="2" fill="url(#g)"/>
+  <rect width="48" height="48" rx="10" fill="#FFFFFF"/>
+  <text x="24" y="30" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-weight="800" font-size="22" fill="#2B3137">C</text>
+  <g transform="rotate(-18 24 24)">
+    <path d="M14 14 A14 7 0 0 1 38 18" stroke="url(#s)" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+    <path d="M38 18 A14 7 0 0 1 16 30" stroke="url(#s)" stroke-width="5" fill="none" stroke-linecap="round"/>
+    <path d="M35 13 L42 18 L36 23 Z" fill="url(#s)"/>
+  </g>
   <defs>
-    <linearGradient id="g" x1="18" y1="18" x2="30" y2="30" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#CCA876"/>
-      <stop offset="1" stop-color="#B5895A"/>
+    <linearGradient id="s" x1="14" y1="13" x2="42" y2="30" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#54BBF6"/>
+      <stop offset="1" stop-color="#0E54C2"/>
     </linearGradient>
   </defs>
 </svg>
