@@ -6,6 +6,10 @@ import {
 import { getClientId, createConversation, postMessage, endConversation } from "./lib/capture";
 import CaptionThread from "./CaptionThread";
 
+// Single fixed avatar for all sessions (voice remains selectable).
+const AVATAR_ID = "785c27b6-f2e2-478d-bdf4-61bed197a4dd";
+const AVATAR_NAME = "Covalent Advisor";
+
 const QUICK_QUESTIONS = [
   "Why partner with Covalent?",
   "How does the private-label capital model work?",
@@ -44,9 +48,7 @@ export default function CovalentAvatar() {
   const [sessionState, setSessionState] = useState(SessionState.INACTIVE);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [avatars, setAvatars] = useState([]);
   const [voices, setVoices] = useState([]);
-  const [selectedAvatarId, setSelectedAvatarId] = useState("");
   const [selectedVoiceId, setSelectedVoiceId] = useState("");
   const [micState, setMicState] = useState("off"); // off | starting | listening | muted
   const [micError, setMicError] = useState("");
@@ -113,7 +115,7 @@ export default function CovalentAvatar() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           mode: "FULL",
-          avatar_id: selectedAvatarId || undefined,
+          avatar_id: AVATAR_ID,
           voice_id: selectedVoiceId || undefined,
         }),
       });
@@ -163,11 +165,10 @@ export default function CovalentAvatar() {
       await session.start();
 
       // Record the conversation (unique by persistent client_id; IP captured server-side).
-      const avatarName = avatars.find(a => a.id === selectedAvatarId)?.name || null;
       conversationIdRef.current = await createConversation({
         client_id: getClientId(),
-        avatar_id: selectedAvatarId || null,
-        avatar_name: avatarName,
+        avatar_id: AVATAR_ID,
+        avatar_name: AVATAR_NAME,
         voice_id: selectedVoiceId || null,
         user_agent: typeof navigator !== "undefined" ? navigator.userAgent : null,
       });
@@ -244,16 +245,12 @@ export default function CovalentAvatar() {
 
   useEffect(() => {
     let cancelled = false;
+    // Avatar is fixed; we only need the voice catalog.
     fetch("/api/heygen/options")
       .then(r => r.json())
       .then(data => {
         if (cancelled) return;
-        setAvatars(data.avatars || []);
         setVoices(data.voices || []);
-        const defaultId = data.defaults?.avatar_id;
-        setSelectedAvatarId(prev =>
-          prev || (defaultId && data.avatars?.some(a => a.id === defaultId) ? defaultId : data.avatars?.[0]?.id || "")
-        );
       })
       .catch(() => { /* keep defaults */ });
     return () => { cancelled = true; };
@@ -299,51 +296,30 @@ export default function CovalentAvatar() {
 
             <div className="cv-panel">
               <div className="cv-field">
-                <div className="cv-label">Select your advisor</div>
-                <div className="cv-avatars">
-                  {avatars.map(a => {
-                    const sel = selectedAvatarId === a.id;
-                    return (
-                      <button
-                        key={a.id}
-                        type="button"
-                        className={`cv-avatar ${sel ? "cv-avatar--on" : ""}`}
-                        onClick={() => setSelectedAvatarId(a.id)}
-                        title={a.name}
-                      >
-                        <img src={a.preview_url} alt={a.name} />
-                        <span className="cv-avatar__name">{a.name}</span>
-                      </button>
-                    );
-                  })}
-                  {avatars.length === 0 && (
-                    <div className="cv-avatars__empty">Loading advisors…</div>
-                  )}
-                </div>
+                <div className="cv-label">Voice</div>
+                <select
+                  className="cv-select"
+                  value={selectedVoiceId}
+                  onChange={e => setSelectedVoiceId(e.target.value)}
+                >
+                  <option value="">Default advisor voice</option>
+                  {voices.map(v => (
+                    <option key={v.id} value={v.id}>
+                      {v.name}{v.gender ? ` · ${v.gender}` : ""}
+                    </option>
+                  ))}
+                </select>
+                <p className="cv-field-note">
+                  {voices.length > 0
+                    ? `${voices.length} voices available · choose one for this briefing`
+                    : "Loading voices…"}
+                </p>
               </div>
-
-              {voices.length > 0 && (
-                <div className="cv-field">
-                  <div className="cv-label">Voice</div>
-                  <select
-                    className="cv-select"
-                    value={selectedVoiceId}
-                    onChange={e => setSelectedVoiceId(e.target.value)}
-                  >
-                    <option value="">Default advisor voice</option>
-                    {voices.map(v => (
-                      <option key={v.id} value={v.id}>
-                        {v.name}{v.gender ? ` · ${v.gender}` : ""}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
 
               <button
                 className="cv-cta"
                 onClick={startSession}
-                disabled={loading || !selectedAvatarId}
+                disabled={loading}
                 data-loading={loading ? "true" : "false"}
               >
                 {loading ? "Connecting…" : "Begin Briefing"}
@@ -580,31 +556,7 @@ const STYLES = `
     color: var(--blue); font-weight: 700; margin-bottom: 14px;
   }
   .cv-label--center { text-align: center; }
-
-  .cv-avatars {
-    min-width: 0; display: flex; gap: 14px; overflow-x: auto; padding-bottom: 6px;
-    scrollbar-width: thin; scrollbar-color: var(--blue) transparent;
-  }
-  .cv-avatars__empty { color: var(--muted); font-size: 13px; padding: 16px 0; }
-  .cv-avatar {
-    flex: 0 0 auto; width: 84px; background: none; border: none; cursor: pointer;
-    display: flex; flex-direction: column; align-items: center; gap: 8px;
-  }
-  .cv-avatar img {
-    width: 72px; height: 72px; border-radius: 50%; object-fit: cover;
-    border: 2px solid var(--line);
-    transition: border-color 0.18s, box-shadow 0.18s, transform 0.18s;
-  }
-  .cv-avatar:hover img { transform: translateY(-2px); border-color: rgba(30,132,232,0.5); }
-  .cv-avatar--on img {
-    border-color: var(--blue);
-    box-shadow: 0 0 0 4px rgba(21,115,216,0.16);
-  }
-  .cv-avatar__name {
-    font-size: 11px; color: var(--muted); max-width: 84px;
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center;
-  }
-  .cv-avatar--on .cv-avatar__name { color: var(--ink); font-weight: 600; }
+  .cv-field-note { margin-top: 8px; font-size: 12px; color: var(--muted); }
 
   .cv-select {
     width: 100%; padding: 13px 16px; border-radius: 10px;
