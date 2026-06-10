@@ -250,7 +250,10 @@ export default function CovalentAvatar() {
       .then(r => r.json())
       .then(data => {
         if (cancelled) return;
-        setVoices(data.voices || []);
+        const list = data.voices || [];
+        setVoices(list);
+        // The avatar requires an explicit voice — auto-select the first one.
+        setSelectedVoiceId(prev => prev || (list[0]?.id || ""));
       })
       .catch(() => { /* keep defaults */ });
     return () => { cancelled = true; };
@@ -301,8 +304,9 @@ export default function CovalentAvatar() {
                   className="cv-select"
                   value={selectedVoiceId}
                   onChange={e => setSelectedVoiceId(e.target.value)}
+                  disabled={voices.length === 0}
                 >
-                  <option value="">Default advisor voice</option>
+                  {voices.length === 0 && <option value="">Loading voices…</option>}
                   {voices.map(v => (
                     <option key={v.id} value={v.id}>
                       {v.name}{v.gender ? ` · ${v.gender}` : ""}
@@ -319,7 +323,7 @@ export default function CovalentAvatar() {
               <button
                 className="cv-cta"
                 onClick={startSession}
-                disabled={loading}
+                disabled={loading || !selectedVoiceId}
                 data-loading={loading ? "true" : "false"}
               >
                 {loading ? "Connecting…" : "Begin Briefing"}
